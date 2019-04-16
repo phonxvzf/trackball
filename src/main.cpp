@@ -14,15 +14,29 @@
 #include "glad.h"
 #include "sphere.hpp"
 
-inline glm::mat4 calc_rot_mat(const glm::vec3& position_old, const glm::vec3& position_new) {
-  glm::vec3 rot_axis = glm::normalize(glm::cross(position_old, position_new));
-  float cosine = glm::dot(position_old, position_new) 
-    / glm::length(position_old) 
-    / glm::length(position_new);
-  float cosine_half = glm::sqrt((cosine + 1) / 2);
-  if (cosine < 0) cosine_half = -cosine_half;
-  glm::quat q(cosine_half, glm::sqrt(1 - cosine_half * cosine_half) * rot_axis);
+inline float calc_rot_angle(const glm::vec3& position_old, const glm::vec3& position_new) {
+  return glm::acos(
+      glm::dot(position_old, position_new) 
+      / glm::length(position_old) 
+      / glm::length(position_new)
+      );
+}
+
+inline glm::mat4 calc_rot_mat(
+    const float theta,
+    const glm::vec3& rot_axis)
+{
+  const float cosine_half = glm::cos(theta / 2);
+  const glm::quat q(cosine_half, glm::sqrt(1 - cosine_half * cosine_half) * rot_axis);
   return glm::mat4_cast(q);
+}
+
+inline glm::mat4 calc_rot_mat(
+    const glm::vec3& position_old,
+    const glm::vec3& position_new,
+    const glm::vec3& rot_axis)
+{
+  return calc_rot_mat(calc_rot_angle(position_old, position_new), rot_axis);
 }
 
 void main_loop(SDL_Window *window) {
@@ -82,7 +96,7 @@ void main_loop(SDL_Window *window) {
   GLint in_position_loc = glGetAttribLocation(sphere_shader.program(), "in_position");
   GLint in_normal_loc = glGetAttribLocation(sphere_shader.program(), "in_normal");
   GLint in_tex_coords_loc = glGetAttribLocation(sphere_shader.program(), "in_tex_coords");
-  GLint u_tex_sampler_loc = glGetUniformLocation(sphere_shader.program(), "u_tex_sampler_loc");
+  GLint u_tex_sampler_loc = glGetUniformLocation(sphere_shader.program(), "u_tex_sampler");
   GLint u_use_texture_loc = glGetUniformLocation(sphere_shader.program(), "u_use_texture");
   GLint u_model_loc = glGetUniformLocation(sphere_shader.program(), "u_model");
   GLint u_view_loc = glGetUniformLocation(sphere_shader.program(), "u_view");
@@ -142,6 +156,13 @@ void main_loop(SDL_Window *window) {
   bool wire_frame = false;
   int32_t use_texture = 1;
   glm::vec2 mouse_old(2.0f), mouse_new(0.0f);
+  uint32_t clk_frame = SDL_GetTicks();
+  uint32_t clk_dt_frame = 0;
+  uint32_t clk_move = SDL_GetTicks();
+  uint32_t clk_dt_move = 0;
+  glm::vec3 rot_axis(0.0f);
+  float rot_omega;
+  bool inert = false;
   while (continue_loop) {
     // Process events
     SDL_Event event;
@@ -158,6 +179,12 @@ void main_loop(SDL_Window *window) {
           }
           if (event.key.keysym.scancode == SDL_SCANCODE_T) {
             use_texture = !use_texture;
+          }
+          break;
+        case SDL_MOUSEBUTTONDOWN:
+          if (event.button.button == SDL_BUTTON_LEFT) {
+            rot_omega = 0.0f;
+            inert = false;
           }
           break;
         case SDL_MOUSEBUTTONUP:
@@ -181,13 +208,27 @@ void main_loop(SDL_Window *window) {
           glm::sqrt(1 - (mouse_new.x * mouse_new.x + mouse_new.y * mouse_new.y))
           );
       if (mouse_old.x < 2.0f
-          && glm::length(mouse_new - mouse_old) > 0.01f
+          && glm::length(mouse_new - mouse_old) > 0.005f
           && glm::length(position_new) > 0.00001f
           && glm::length(position_old) > 0.00001f) // prevent division by zero
       {
-        mat_model = calc_rot_mat(position_old, position_new) * mat_model;
+        rot_axis = glm::normalize(glm::cross(position_old, position_new));
+        const float rot_angle = calc_rot_angle(position_old, position_new);
+        mat_model = calc_rot_mat(rot_angle, rot_axis) * mat_model;
+
+        // Calculate angular velocity
+        clk_dt_move = SDL_GetTicks() - clk_move;
+        clk_move = SDL_GetTicks();
+        rot_omega = rot_angle / (clk_dt_move / 1000.0f);
+        inert = true;
       }
       mouse_old = mouse_new;
+    } else if (inert) {
+      // User is not holding left button. Rotate with inertia.
+      const float dt_frame = clk_dt_frame / 1000.0f;
+      const float dtheta = glm::radians(glm::max(0.0f, ROT_OMEGA_COEF * rot_omega * dt_frame));
+      rot_omega -= ROT_DEACCEL * dt_frame;
+      mat_model = calc_rot_mat(dtheta, rot_axis) * mat_model;
     }
 
     // Draw stuff
@@ -206,6 +247,8 @@ void main_loop(SDL_Window *window) {
     sphere_shader.detach();
 
     SDL_GL_SwapWindow(window);
+    clk_dt_frame = SDL_GetTicks() - clk_frame;
+    clk_frame = SDL_GetTicks();
   }
 
   sphere_shader.clean();
@@ -223,9 +266,12 @@ int main() {
   }
 
   if (IMG_Init(IMG_INIT_PNG) != IMG_INIT_PNG) {
+    SDL_Quit();
     std::cerr << IMG_GetError() << std::endl;
     return 1;
   }
+
+  std::atexit(clean_up);
 
   // Initialize OpenGL window
   SDL_Window *window = SDL_CreateWindow(
@@ -239,18 +285,17 @@ int main() {
   SDL_GLContext gl_context = SDL_GL_CreateContext(window);
   SDL_GL_MakeCurrent(window, gl_context);
   if (SDL_GL_SetSwapInterval(-1) == -1) { // Try enabling adaptive VSync
+    std::cerr << "[WARNING] Could not enable adaptive VSync. Falling back to normal VSync." << std::endl;
     SDL_GL_SetSwapInterval(1); // Fallback to normal VSync
   }
   if (!gladLoadGL()) {
-    std::cerr << "Could not load OpenGL" << std::endl;
+    std::cerr << "[ERROR] Could not load OpenGL" << std::endl;
     return 1;
   }
 
-  std::cout << "OpenGL version: " << GLVersion.major << '.' << GLVersion.minor << std::endl;
+  std::cout << "[INFO] OpenGL version: " << GLVersion.major << '.' << GLVersion.minor << std::endl;
 
   // Enter main loop
   main_loop(window);
-
-  std::atexit(clean_up);
   return 0;
 }

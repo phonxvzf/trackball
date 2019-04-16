@@ -1,3 +1,7 @@
+/*
+ * Sphere generation code
+ * Credits to songho (http://www.songho.ca/opengl/gl_sphere.html) for the great guide.
+ */
 #include <cmath>
 
 #include "sphere.hpp"

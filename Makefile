@@ -5,7 +5,7 @@ BINARY := trackball
 CXX := g++
 CC := gcc
 CXX_FLAGS := -ggdb -std=c++14 -Wall -Wextra -pipe -DGLM_FORCE_RADIANS
-LD_FLAGS := -lGL -ldl -lSDL2 -lSDL2_image
+LD_FLAGS := -lGL -ldl -lSDL2 -lSDL2_image -lm
 OBJS := main shader sphere
 GLOBAL_HEADERS :=
 
